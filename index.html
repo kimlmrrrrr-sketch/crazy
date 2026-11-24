@@ -240,8 +240,10 @@ const MAPS = [
   { n: "사탕 나라", icon: "🍬", soft: 0.8, hard: (c, r) => CANDY_W.has(r * COLS + c) },
   { n: "해변", icon: "🏖️", soft: 0.6, hard: (c, r) => ((r === 4 || r === 8) && ((c >= 2 && c <= 5) || (c >= 9 && c <= 12))) || (r === 6 && c >= 6 && c <= 8) },
   { n: "밤의 광장", icon: "🌙", soft: 0.7, hard: (c, r) => ((r === 3 || r === 9) && c >= 4 && c <= 10 && c !== 7) || ((c === 4 || c === 10) && r >= 3 && r <= 9 && r !== 6) || ((c === 2 || c === 12) && (r === 2 || r === 10)) },
-  { n: "문어 대왕 둥지", icon: "🐙", soft: 0.35, boss: true, hard: (c, r) => [[3,3],[11,3],[3,9],[11,9],[7,1],[7,11],[1,6],[13,6],[5,6],[9,6]].some(([a, b]) => a === c && b === r) },
+  { n: "문어 대왕 둥지", icon: "🐙", soft: 0.35, boss: true, bname: "문어 대왕", bicon: "🐙", bkind: "octo", hard: (c, r) => [[3,3],[11,3],[3,9],[11,9],[7,1],[7,11],[1,6],[13,6],[5,6],[9,6]].some(([a, b]) => a === c && b === r) },
 ];
+MAPS.push({ n: "슬라임 왕 늪", icon: "🟢", soft: 0.3, boss: true, bname: "슬라임 왕", bicon: "🟢", bkind: "slime", hard: (c, r) => [[3,2],[11,2],[3,10],[11,10],[7,3],[7,9],[2,6],[12,6],[5,5],[9,5],[5,7],[9,7]].some(([a, b]) => a === c && b === r) });
+const SLIME_HP = 1.6;   // 슬라임 왕은 맞출 기회가 많아서 체력을 더 줌
 const BOSS_IDX = MAPS.findIndex((m) => m.boss);
 // 시작 자리 주변은 비워 두고, 모든 시작 자리가 서로 이어지는지 확인 (안 이어지면 기본 맵으로)
 function buildHard(mapIdx, spawns) {
@@ -256,7 +258,8 @@ function buildHard(mapIdx, spawns) {
     if (spawns.every(([sc, sr]) => seen[sr * COLS + sc])) { for (let k = 0; k < hard.length; k++) if (!hard[k] && !seen[k]) hard[k] = 1; return { hard, reserved, idx }; }   // 갇힌 빈칸은 벽으로 메움
   }
 }
-function makeGame(order, mode, mapIdx) {   // order: [{id, team, bot}]
+function makeGame(order, mode, mapIdx, bossLv) {
+  if (mode === "boss") Object.assign(BOSSCFG, BOSS_LV[Number.isInteger(bossLv) && BOSS_LV[bossLv] ? bossLv : 1]);   // order: [{id, team, bot}]
   const grid = new Uint8Array(COLS * ROWS), hidden = new Array(COLS * ROWS).fill("");
   const spawns = [], cnt = [0, 0];
   order.forEach((o, i) => spawns.push(mode === "team" ? TEAM_SPAWNS[o.team][cnt[o.team]++ % 4] : FFA_SPAWNS[i % 8]));
@@ -271,8 +274,8 @@ function makeGame(order, mode, mapIdx) {   // order: [{id, team, bot}]
   const players = order.map((o, i) => ({ id: o.id, team: o.team, bot: o.bot ? { t: Math.random() * 0.3, target: null } : null,
     x: spawns[i][0] + 0.5, y: spawns[i][1] + 0.5, face: 2, in: 0, alive: true, trapped: false, tt: 0, shield: 1.5,
     bombs: mode === "boss" ? 2 : 1, range: mode === "boss" ? 2 : 1, spd: mode === "boss" ? 1 : 0, needles: mode === "boss" ? 1 : 0, out: 0 }));
-  const nh = order.filter((o) => !o.bot).length, bmax = BOSSCFG.hpBase + BOSSCFG.hpPer * Math.max(1, nh);
-  const boss = mode === "boss" ? { x: 7.5, y: 6.5, r: 1.0, hp: bmax, max: bmax, inv: 0, alive: true, t: 0, tt: 0, target: null, sp: 3, wander: 0, wdir: [0, 0], lx: 7.5, ly: 6.5, lt: 1, rage: false } : null;
+  const nh = order.filter((o) => !o.bot).length, bmax = Math.round((BOSSCFG.hpBase + BOSSCFG.hpPer * Math.max(1, nh)) * (MAPS[idx].bkind === "slime" ? SLIME_HP : 1));
+  const boss = mode === "boss" ? { x: 7.5, y: 6.5, r: 1.0, hp: bmax, max: bmax, inv: 0, alive: true, t: 0, tt: 0, target: null, sp: 3, wander: 0, wdir: [0, 0], lx: 7.5, ly: 6.5, lt: 1, rage: false, kind: MAPS[idx].bkind || "octo", ph: "idle", pt: 2.5, dx: 0, dy: 1, again: 0 } : null;
   return { mode, mapIdx: idx, grid, hidden, players, balloons: [], flames: new Map(), fsrc: new Map(), items: [], t: 0, limit: mode === "boss" ? 240 : TIME_LIMIT, gv: 0, boss };   // gv: 블록이 바뀔 때마다 올라가는 번호
 }
 const hasBalloon = (G, c, r) => G.balloons.some((b) => b.c === c && b.r === r);
@@ -305,9 +308,10 @@ function movePlayer(G, p, dir, dist) {
     if (!blockedCell(G, cc, ar, p)) { const t = cc + 0.5, d = Math.min(dist, Math.abs(t - p.x)); const tx = p.x + Math.sign(t - p.x) * d; if (!boxBlocked(G, tx, p.y, p)) p.x = tx; }
   }
 }
-function tryBomb(G, p) {
+function tryBomb(G, p, wc, wr) {
   if (!p.alive || p.trapped || p.out >= p.bombs) return false;
-  const c = Math.floor(p.x), r = Math.floor(p.y);
+  let c = Math.floor(p.x), r = Math.floor(p.y);
+  if (Number.isInteger(wc) && Number.isInteger(wr) && wc >= 0 && wc < COLS && wr >= 0 && wr < ROWS && Math.abs(wc + .5 - p.x) < 1.7 && Math.abs(wr + .5 - p.y) < 1.7) { c = wc; r = wr; }   // 친구 화면에서 본 칸(렉 때문에 방장 위치가 한 칸 뒤일 수 있어서)
   if (G.grid[r * COLS + c] || hasBalloon(G, c, r)) return false;
   const pass = G.players.filter((q) => q.alive && Math.abs(q.x - (c + .5)) < .5 + HALF && Math.abs(q.y - (r + .5)) < .5 + HALF).map((q) => q.id);
   G.balloons.push({ c, r, own: p.id, range: p.range, f: FUSE, pass });
@@ -367,7 +371,12 @@ function stepGame(G, dt) {
   if (G.boss) stepBoss(G, dt);
 }
 // ---------- 보스 (문어 대왕): 방장 컴퓨터에서만 계산 ----------
-const BOSSCFG = { v1: 1.4, v2: 2.0, sp1: 5.5, sp2: 3.8, n1: 1, n2: 3, fuse: 2.2, hpBase: 16, hpPer: 6, trapT: 6.5, bias: 0 };   // 보스 난이도 값 (여기만 고치면 됨)
+const BOSSCFG = { v1: 1.4, v2: 2.0, sp1: 5.5, sp2: 3.8, n1: 1, n2: 3, fuse: 2.2, hpBase: 16, hpPer: 6, trapT: 6.5, bias: 0 };
+const BOSS_LV = [   // 0 = 하, 1 = 중, 2 = 상  (숫자만 바꾸면 난이도 조절 가능)
+  { name: "하", v1: 0.8, v2: 1.1, sp1: 10, sp2: 8, n1: 1, n2: 1, fuse: 2.8, hpBase: 10, hpPer: 4, trapT: 10, wait: 2.4, chg: 0.9, dsh: 4.8 },
+  { name: "중", v1: 1.1, v2: 1.5, sp1: 7, sp2: 5, n1: 1, n2: 2, fuse: 2.5, hpBase: 13, hpPer: 5, trapT: 8, wait: 1.6, chg: 0.7, dsh: 6.0 },
+  { name: "상", v1: 1.4, v2: 2.0, sp1: 5.5, sp2: 3.8, n1: 1, n2: 3, fuse: 2.2, hpBase: 16, hpPer: 6, trapT: 6.5, wait: 1.0, chg: 0.5, dsh: 7.4 },
+];   // 보스 난이도 값 (여기만 고치면 됨)
 function bossHardBlocked(G, B, x, y) {
   const q = B.r * 0.78;
   for (const [dx, dy] of [[0, 0], [q, 0], [-q, 0], [0, q], [0, -q], [q * .7, q * .7], [-q * .7, q * .7], [q * .7, -q * .7], [-q * .7, -q * .7]]) {
@@ -375,6 +384,26 @@ function bossHardBlocked(G, B, x, y) {
     if (c < 0 || r < 0 || c >= COLS || r >= ROWS || G.grid[r * COLS + c] === 1) return true;
   }
   return false;
+}
+function slimeMove(G, B, dt, dx, dy) {   // 슬라임 왕: 느릿느릿 → 웅크림(예고) → 돌진 → 벽에 쾅 하면 잠깐 멈춤
+  const step = (vx, vy, sp) => {
+    const nx = B.x + vx * sp, ny = B.y + vy * sp;
+    if (!bossHardBlocked(G, B, nx, ny)) { B.x = nx; B.y = ny; return true; }
+    if (!bossHardBlocked(G, B, nx, B.y)) { B.x = nx; return true; }
+    if (!bossHardBlocked(G, B, B.x, ny)) { B.y = ny; return true; }
+    return false;
+  };
+  const aim = () => { if (!B.target) return false; const d = Math.hypot(B.target.x - B.x, B.target.y - B.y) || 1; B.dx = (B.target.x - B.x) / d; B.dy = (B.target.y - B.y) / d; return true; };
+  B.pt -= dt;
+  if (B.ph === "idle") { step(dx, dy, 0.55 * dt); if (B.pt <= 0) { if (aim()) { B.ph = "charge"; B.pt = BOSSCFG.chg * (B.rage ? 0.8 : 1); } else B.pt = 0.5; } }
+  else if (B.ph === "charge") { if (B.pt <= 0) { B.ph = "dash"; B.pt = 0.65; } }
+  else if (B.ph === "dash") {
+    const ok = step(B.dx, B.dy, BOSSCFG.dsh * (B.rage ? 1.15 : 1) * dt);
+    if (!ok || B.pt <= 0) {
+      if (B.rage && !B.again && aim()) { B.again = 1; B.ph = "charge"; B.pt = 0.4; }   // 화나면 연속 돌진
+      else { B.again = 0; B.ph = "idle"; B.pt = BOSSCFG.wait * (B.rage ? 0.65 : 1) + (ok ? 0 : 1.0); }   // 벽에 부딪히면 더 오래 멈춤 = 공격 기회
+    }
+  }
 }
 function stepBoss(G, dt) {
   const B = G.boss; if (!B.alive) return;
@@ -393,10 +422,13 @@ function stepBoss(G, dt) {
   let dx = 0, dy = 0;
   if (B.wander > 0) { B.wander -= dt; dx = B.wdir[0]; dy = B.wdir[1]; }
   else if (B.target) { const d = Math.hypot(B.target.x - B.x, B.target.y - B.y) || 1; dx = (B.target.x - B.x) / d; dy = (B.target.y - B.y) / d; }
-  const sp = (B.rage ? BOSSCFG.v2 : BOSSCFG.v1) * dt;
-  if (!bossHardBlocked(G, B, B.x + dx * sp, B.y + dy * sp)) { B.x += dx * sp; B.y += dy * sp; }
-  else if (!bossHardBlocked(G, B, B.x + dx * sp, B.y)) B.x += dx * sp;
-  else if (!bossHardBlocked(G, B, B.x, B.y + dy * sp)) B.y += dy * sp;
+  if (B.kind === "slime") slimeMove(G, B, dt, dx, dy);
+  else {
+    const sp = (B.rage ? BOSSCFG.v2 : BOSSCFG.v1) * dt;
+    if (!bossHardBlocked(G, B, B.x + dx * sp, B.y + dy * sp)) { B.x += dx * sp; B.y += dy * sp; }
+    else if (!bossHardBlocked(G, B, B.x + dx * sp, B.y)) B.x += dx * sp;
+    else if (!bossHardBlocked(G, B, B.x, B.y + dy * sp)) B.y += dy * sp;
+  }
   for (let r = Math.max(0, Math.floor(B.y - 1.2)); r <= Math.min(ROWS - 1, Math.floor(B.y + 1.2)); r++) for (let c = Math.max(0, Math.floor(B.x - 1.2)); c <= Math.min(COLS - 1, Math.floor(B.x + 1.2)); c++) {   // 지나가는 길의 상자를 부숨
     const k = r * COLS + c;
     if (G.grid[k] === 2 && Math.hypot(c + .5 - B.x, r + .5 - B.y) < 1.15) { G.grid[k] = 0; if (G.hidden[k]) { G.items.push({ c, r, type: G.hidden[k] }); G.hidden[k] = ""; } G.gv++; }
@@ -408,7 +440,7 @@ function stepBoss(G, dt) {
     else if (p.bg <= 0) { p.alive = false; p.trapped = false; }
   }
   B.sp -= dt;
-  if (B.sp <= 0) {   // 물풍선 뱉기: 사람들 근처에 떨어뜨림
+  if (B.sp <= 0 && B.kind !== "slime") {   // 물풍선 뱉기 (슬라임은 안 뱉고 돌진): 사람들 근처에 떨어뜨림
     B.sp = B.rage ? BOSSCFG.sp2 : BOSSCFG.sp1;
     const n = B.rage ? BOSSCFG.n2 : BOSSCFG.n1, alive = G.players.filter((p) => p.alive);
     for (let i = 0; i < n && alive.length; i++) {
@@ -507,7 +539,8 @@ function makeSnap(G, withGrid) {
     i: G.items.map((it) => [it.c, it.r, ITEM_KEYS.indexOf(it.type)]),
     tl: Math.max(0, Math.ceil(G.limit - G.t)),
   };
-  if (G.boss) s.bo = [+G.boss.x.toFixed(2), +G.boss.y.toFixed(2), G.boss.hp, G.boss.max, (G.boss.alive ? 1 : 0) | (G.boss.inv > 0 ? 2 : 0) | (G.boss.rage ? 4 : 0)];
+  if (G.boss) s.bo = [+G.boss.x.toFixed(2), +G.boss.y.toFixed(2), G.boss.hp, G.boss.max, (G.boss.alive ? 1 : 0) | (G.boss.inv > 0 ? 2 : 0) | (G.boss.rage ? 4 : 0) | (G.boss.ph === "charge" ? 8 : 0) | (G.boss.ph === "dash" ? 16 : 0)];
+  if (G.boss && G.boss.kind === "slime") s.bo.push(+G.boss.dx.toFixed(2), +G.boss.dy.toFixed(2));
   if (withGrid) s.g = Array.from(G.grid).join("");   // 블록 정보는 필요할 때만 (보내는 쪽 sendSnap이 결정)
   return s;
 }
@@ -531,6 +564,7 @@ const charK = (id) => {   // 이 사람(봇)이 쓰는 캐릭터 번호: 대기�
 };
 const faceOf = (id) => (present[id] && present[id].spec ? "👀" : `<img class="ci" src="${charURL(charK(id))}">`);
 const avHTML = (id) => `<span class="av" style="background:${CHARS[charK(id)].bg}"><img src="${charURL(charK(id))}"></span>`;
+const bossMeta = () => { const m = (S && S.curMap >= 0 && MAPS[S.curMap] && MAPS[S.curMap].boss) ? MAPS[S.curMap] : MAPS[BOSS_IDX]; return { n: m.bname, i: m.bicon }; };
 const isBossRun = () => !!S && S.phase !== "lobby" && S.curMap >= 0 && !!MAPS[S.curMap].boss;
 const nameOf = (id) => (S && S.names[id]) || (present[id] && present[id].name) || "?";
 function toast(t) { const el = $("toast"); el.textContent = t; el.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove("on"), 3200); addLine(esc(t), "sys"); }
@@ -642,7 +676,7 @@ const playerIds = () => presentIds().filter((id) => !present[id].spec);   // 참
 const specIds = () => presentIds().filter((id) => present[id].spec);      // 관전자
 const hostOrder = () => playerIds().concat(specIds());                    // 방장 후보 순서: 참가자 먼저
 const presSig = (l) => Object.keys(l).sort().map((k) => k + (l[k].spec ? "s" : "")).join();
-function newLobby() { return { phase: "lobby", mode: "ffa", winsTo: 2, bots: 0, map: "rand", curMap: -1, teamOf: {}, charOf: {}, runChar: {}, names: {}, order: [], wins: {}, twins: [0, 0], round: 0, rid: 0, endsIn: 0, msg: "", final: "" }; }
+function newLobby() { return { phase: "lobby", mode: "ffa", winsTo: 2, bots: 0, map: "rand", bossLv: 1, curMap: -1, teamOf: {}, charOf: {}, runChar: {}, names: {}, order: [], wins: {}, twins: [0, 0], round: 0, rid: 0, endsIn: 0, msg: "", final: "" }; }
 function fixChars() {   // 캐릭터가 겹치거나 없는 사람에게 빈 캐릭터를 줌 (방장만 실행)
   let ch = false; const used = new Set(), ids = playerIds();
   for (const id of Object.keys(S.charOf)) if (!present[id] || present[id].spec) { delete S.charOf[id]; ch = true; }
@@ -701,14 +735,14 @@ function startRound() {
   const pool = MAPS.map((m, i) => i).filter((i) => !MAPS[i].boss);   // 랜덤에는 보스맵이 안 나옴
   let mi = S.map === "rand" ? pool[Math.floor(Math.random() * pool.length)] : (Number.isInteger(S.map) ? S.map : 0);
   if (S.map === "rand" && pool.length > 1) while (mi === S.curMap) mi = pool[Math.floor(Math.random() * pool.length)];   // 랜덤이면 직전 맵과 다른 맵
-  G = makeGame(S.order.map((id) => ({ id, team: (S.runTeams || {})[id] || 0, bot: id.startsWith("bot") })), MAPS[mi].boss ? "boss" : S.mode, mi);
+  G = makeGame(S.order.map((id) => ({ id, team: (S.runTeams || {})[id] || 0, bot: id.startsWith("bot") })), MAPS[mi].boss ? "boss" : S.mode, mi, S.bossLv);
   S.curMap = G.mapIdx;
   S.rid++; S.phase = "countdown"; hostEnds = Date.now() + COUNTDOWN_MS; S.msg = "";
   pushState(); sendSnap(true);
 }
 function endRound(res) {
   if (G && G.mode === "boss") {
-    S.bossWin = !!res.bossDown; S.msg = S.bossWin ? "🎉 문어 대왕을 쓰러뜨렸어요!" : "💀 문어 대왕에게 졌어요..."; S.phase = "roundEnd"; hostEnds = Date.now() + ROUNDEND_MS; pushState(); return;
+    S.bossWin = !!res.bossDown; S.msg = S.bossWin ? "🎉 보스를 쓰러뜨렸어요!" : "💀 보스에게 졌어요..."; S.phase = "roundEnd"; hostEnds = Date.now() + ROUNDEND_MS; pushState(); return;
   }
   let msg = "⏰ 무승부!";
   if (res.team !== undefined && res.team >= 0) { S.twins[res.team]++; msg = `🎉 ${TEAM_NAME[res.team]} 승리!`; }
@@ -717,7 +751,7 @@ function endRound(res) {
   S.msg = msg; S.phase = "roundEnd"; hostEnds = Date.now() + ROUNDEND_MS; pushState();
 }
 function afterRoundEnd() {
-  if (G && G.mode === "boss") { S.final = S.bossWin ? "🐙 보스 처치 성공! 모두 우승!" : "💀 보스에게 졌어요… 다시 도전!"; S.phase = "gameOver"; hostEnds = 0; pushState(); return; }
+  if (G && G.mode === "boss") { S.final = S.bossWin ? bossMeta().i + " 보스 처치 성공! 모두 우승!" : "💀 보스에게 졌어요… 다시 도전!"; S.phase = "gameOver"; hostEnds = 0; pushState(); return; }
   const target = S.winsTo;
   if (S.mode === "team" ? Math.max(...S.twins) >= target : Math.max(0, ...Object.values(S.wins)) >= target) {
     S.final = S.mode === "team" ? `${TEAM_NAME[S.twins[0] >= S.twins[1] ? 0 : 1]} 우승!` : `👑 ${nameOf(Object.keys(S.wins).sort((a, b) => S.wins[b] - S.wins[a])[0])} 우승!`;
@@ -774,6 +808,8 @@ function handle(m) {
       snaps.push({ rt, s }); if (snaps.length > 10) snaps.shift();
     } break;
     case "in": if (isHost) handleInput(m.from, m); break;
+    case "ping": if (isHost) net.send({ t: "pong", to: m.from, h: m.h }); break;
+    case "pong": if (m.to === myId && typeof m.h === "number") { const r = performance.now() - m.h; pingMs = pingMs ? pingMs * 0.6 + r * 0.4 : r; showPing(); } break;
     case "team": if (isHost && S && (S.phase === "lobby" || S.phase === "gameOver") && present[m.from]) { S.teamOf[m.from] = m.team === 1 ? 1 : 0; pushState(); } break;
     case "settings":
       if (isHost && (S.phase === "lobby")) {
@@ -783,6 +819,7 @@ function handle(m) {
         }
         if ([1, 2, 3].includes(m.winsTo)) S.winsTo = m.winsTo;
         if (Number.isInteger(m.bots) && m.bots >= 0 && m.bots <= 7) S.bots = m.bots;
+        if ([0, 1, 2].includes(m.bossLv)) S.bossLv = m.bossLv;
         if (m.map === "rand" || (Number.isInteger(m.map) && m.map >= 0 && m.map < MAPS.length)) S.map = m.map;
         pushState();
       }
@@ -795,10 +832,26 @@ function handleInput(from, m) {
   if (!G || !S || S.phase !== "playing") return;
   const p = G.players.find((q) => q.id === from); if (!p || !p.alive) return;
   if (m.d !== undefined) p.in = m.d | 0;
-  if (m.bomb) tryBomb(G, p);
+  if (m.bomb) tryBomb(G, p, m.c, m.r);
   if (m.needle) tryNeedle(G, p);
 }
-function sendInput(o) { if (isHost) handleInput(myId, o); else if (net) net.send(Object.assign({ t: "in", from: myId }, o)); }
+let pingMs = 0, pingEl = null;
+function showPing() {
+  if (!pingEl) { pingEl = document.createElement("div"); pingEl.style.cssText = "position:fixed;right:10px;bottom:8px;z-index:50;padding:3px 9px;border-radius:99px;font:700 12px sans-serif;background:rgba(255,255,255,.9);border:2px solid #3b3355;pointer-events:none"; document.body.appendChild(pingEl); }
+  const v = Math.round(pingMs); pingEl.textContent = "📶 핑 " + v + "ms"; pingEl.style.color = v < 120 ? "#1a9a4a" : v < 250 ? "#c77d00" : "#d62839";
+  pingEl.style.display = S && S.phase !== "lobby" && !isHost ? "block" : "none";
+}
+setInterval(() => { if (!isHost && net && S) net.send({ t: "ping", from: myId, h: performance.now() }); }, 2000);
+// 내가 놓은 물풍선은 방장 답을 기다리지 않고 바로 보이게 (가짜 풍선; 진짜가 오면 교체)
+const ghosts = [];
+function ghostBomb() {
+  if (isHost || !S || S.phase !== "playing" || !predPos || !predGrid || !lastMe || !lastMe.alive || lastMe.trapped) return null;
+  const c = Math.floor(predPos.x), r = Math.floor(predPos.y), now = performance.now(), cell = { c, r };
+  for (let i = ghosts.length - 1; i >= 0; i--) if (now - ghosts[i].t > 1500) ghosts.splice(i, 1);
+  if (lastMe.out + ghosts.length >= lastMe.bm || predGrid[r * COLS + c] || ghosts.some((g) => g.c === c && g.r === r) || (lastBalloons || []).some((b) => b.c === c && b.r === r)) return cell;
+  ghosts.push({ c, r, t: now }); return cell;
+}
+function sendInput(o) { if (o && o.bomb) { const g = ghostBomb(); if (g) { o.c = g.c; o.r = g.r; } } if (isHost) handleInput(myId, o); else if (net) net.send(Object.assign({ t: "in", from: myId }, o)); }
 
 // ===================== 키 / 터치 입력 =====================
 const KEYDIR = { ArrowUp: 1, w: 1, W: 1, ArrowDown: 2, s: 2, S: 2, ArrowLeft: 3, a: 3, A: 3, ArrowRight: 4, d: 4, D: 4 };
@@ -828,7 +881,7 @@ $("tNeedle").addEventListener("pointerdown", (e) => { e.preventDefault(); sendIn
 // ===================== 화면 정보 만들기 =====================
 function decode(s) {
   return { players: s.p.map((a, i) => ({ i, x: a[0], y: a[1], d: a[2], alive: !!(a[3] & 1), trapped: !!(a[3] & 2), shield: !!(a[3] & 4), bm: a[4], rg: a[5], sp: a[6], nd: a[7], tt: a[8] / 10, out: a[9] })),
-    balloons: s.b.map((a) => ({ c: a[0], r: a[1], f: a[2] / 10 })), boss: s.bo ? { x: s.bo[0], y: s.bo[1], hp: s.bo[2], max: s.bo[3], alive: !!(s.bo[4] & 1), hurt: !!(s.bo[4] & 2), rage: !!(s.bo[4] & 4) } : null, flames: s.f, items: s.i.map((a) => ({ c: a[0], r: a[1], t: ITEM_KEYS[a[2]] })), tl: s.tl };
+    balloons: s.b.map((a) => ({ c: a[0], r: a[1], f: a[2] / 10 })), boss: s.bo ? { x: s.bo[0], y: s.bo[1], hp: s.bo[2], max: s.bo[3], alive: !!(s.bo[4] & 1), hurt: !!(s.bo[4] & 2), rage: !!(s.bo[4] & 4), charge: !!(s.bo[4] & 8), dash: !!(s.bo[4] & 16), dx: s.bo[5] || 0, dy: s.bo[6] || 0, kind: s.bo.length > 5 ? "slime" : "octo" } : null, flames: s.f, items: s.i.map((a) => ({ c: a[0], r: a[1], t: ITEM_KEYS[a[2]] })), tl: s.tl };
 }
 // 내 캐릭터는 방장 답을 기다리지 않고 바로 움직이게 (방장이 알려주는 위치로 부드럽게 맞춤)
 function predictMe(v, now) {
@@ -848,7 +901,16 @@ function predictMe(v, now) {
   predPos.x += ex * k; predPos.y += ey * k;
   me.x = predPos.x; me.y = predPos.y; if (curDir) me.d = curDir;
 }
-function currentView(now) { const v = currentView0(now); if (v && !isHost) predictMe(v, now); return v; }
+let lastMe = null, lastBalloons = null;
+function currentView(now) {
+  const v = currentView0(now);
+  if (v && !isHost) {
+    predictMe(v, now);
+    const mi = (S.order || []).indexOf(myId); lastMe = mi >= 0 ? v.players[mi] : null; lastBalloons = v.balloons;
+    for (let i = ghosts.length - 1; i >= 0; i--) { const g = ghosts[i], el = (now - g.t) / 1000; if (el > 1.5 || v.balloons.some((b) => b.c === g.c && b.r === g.r)) { ghosts.splice(i, 1); continue; } v.balloons.push({ c: g.c, r: g.r, f: Math.max(0.1, FUSE - el) }); }
+  }
+  return v;
+}
 function currentView0(now) {
   if (isHost && G) { const s = makeSnap(G, true); viewGrid = s.g; return decode(s); }
   if (!snaps.length) return null;
@@ -967,6 +1029,7 @@ const THEMES = [
   { a: "#fff1c9", b: "#ffe6a8", bg: "#bfeaf5", deco: "beach", hard: { f: "#ff8f70", t: "#ffc8b4", s: "#a8452e", hs: "coral" }, soft: { f: "#c98a4a", s: "#7a4a1e", m: "barrel" } },
   { a: "#4a5384", b: "#424a78", bg: "#232a52", deco: "night", hard: { f: "#2c3358", t: "#5a64a8", s: "#141830", hs: "pillar" }, soft: { f: "#8fa6ff", s: "#4a5bd0", m: "gem" } },
   { a: "#4b3a6b", b: "#43335f", bg: "#2a2040", deco: "runes", hard: { f: "#3a2c55", t: "#7a5fb0", s: "#150f26", hs: "totem" }, soft: { f: "#8a7aa8", s: "#3f2a5c", m: "rubble" } },
+  { a: "#6f9a58", b: "#678f51", bg: "#2f4a2c", deco: "swamp", hard: { f: "#e5484d", t: "#ff9aa0", s: "#6b1d2a", hs: "mushroom" }, soft: { f: "#8be28b", s: "#2f8a3d", m: "jelly" } },
 ];
 const floorCache = {};
 function floorFor(mi) {   // 바닥 그림은 한 번만 그려서 저장해 두고 계속 재사용
@@ -998,6 +1061,10 @@ function floorFor(mi) {   // 바닥 그림은 한 번만 그려서 저장해 두
     } else if (d === "runes") {
       if (rnd() < 0.5) { g.strokeStyle = "rgba(20,10,40,.55)"; g.lineWidth = 1.6; const sx = px(), sy = py(); g.beginPath(); g.moveTo(sx, sy); g.lineTo(sx + 7 * (rnd() - .5), sy + 8); g.lineTo(sx + 10 * (rnd() - .5), sy + 14); g.stroke(); }
       if (rnd() < 0.16) { const sx = px(), sy = py(); g.strokeStyle = "rgba(170,125,255,.6)"; g.lineWidth = 1.8; g.beginPath(); g.moveTo(sx, sy - 5); g.lineTo(sx - 4, sy + 3); g.lineTo(sx + 4, sy + 3); g.closePath(); g.moveTo(sx, sy - 1); g.lineTo(sx, sy + 3); g.stroke(); }
+    } else if (d === "swamp") {
+      if (rnd() < 0.28) { g.fillStyle = "rgba(40,80,45,.45)"; g.beginPath(); g.ellipse(px(), py(), 8 + rnd() * 4, 4 + rnd() * 2, rnd(), 0, 7); g.fill(); }
+      if (rnd() < 0.14) { const sx = px(), sy = py(); g.fillStyle = "#4fa84f"; g.strokeStyle = "#2d6a30"; g.lineWidth = 1.4; g.beginPath(); g.arc(sx, sy, 5.5, 0.4, 5.9); g.lineTo(sx, sy); g.closePath(); g.fill(); g.stroke(); }
+      if (rnd() < 0.2) { g.strokeStyle = "rgba(190,255,190,.55)"; g.lineWidth = 1.4; g.beginPath(); g.arc(px(), py(), 2 + rnd() * 2, 0, 7); g.stroke(); }
     }
   }
   const vg = g.createRadialGradient(W / 2, H / 2, H * 0.35, W / 2, H / 2, H * 0.9); vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,0,.18)"); g.fillStyle = vg; g.fillRect(0, 0, W, H);   // 가장자리 살짝 어둡게
@@ -1050,6 +1117,11 @@ function drawHard(th, x, y, now) {
     ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(cx, cy, 16, 0, 7); ctx.fill();
     ctx.fillStyle = "#e9d6ff"; ctx.beginPath(); ctx.ellipse(cx, cy, 8, 5.5, 0, 0, 7); ctx.fill(); ctx.stroke();
     ctx.fillStyle = "#2a1450"; ctx.beginPath(); ctx.ellipse(cx, cy, 2.2, 5, 0, 0, 7); ctx.fill();
+  } else if (hs === "mushroom") {
+    ctx.fillStyle = "#f5ecd7"; rr(cx - 6, cy - 2, 12, T * 0.42, 5); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = h.f; ctx.beginPath(); ctx.ellipse(cx, cy - 4, T * 0.46, T * 0.34, 0, Math.PI, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#fff"; for (const [dx, dy, r] of [[-11, -9, 4], [3, -14, 3.4], [12, -7, 3.6], [-2, -5, 2.6]]) { ctx.beginPath(); ctx.arc(cx + dx, cy + dy, r, 0, 7); ctx.fill(); }
+    ctx.fillStyle = "rgba(255,255,255,.35)"; ctx.beginPath(); ctx.ellipse(cx - 12, cy - 14, 6, 2.6, -0.6, 0, 7); ctx.fill();
   } else {
     ctx.fillStyle = h.f; rr(x + 1, y + 1, T - 2, T - 2, 8); ctx.fill(); ctx.fillStyle = h.t; rr(x + 5, y + 4, T - 10, T / 2 - 4, 6); ctx.fill(); rr(x + 1, y + 1, T - 2, T - 2, 8); ctx.stroke();
   }
@@ -1088,6 +1160,10 @@ function drawSoft(th, x, y) {
     rr(x + 3, y + 5, T - 6, T - 8, 8); ctx.fillStyle = "#53406f"; ctx.fill(); ctx.stroke(); ctx.fillStyle = sf.f;
     for (const pts of [[8, 30, 14, 18, 26, 22, 24, 36, 10, 38], [24, 18, 32, 10, 41, 18, 38, 30, 26, 28], [16, 12, 24, 8, 28, 14, 20, 18]]) { ctx.beginPath(); ctx.moveTo(x + pts[0], y + pts[1]); for (let i = 2; i < pts.length; i += 2) ctx.lineTo(x + pts[i], y + pts[i + 1]); ctx.closePath(); ctx.fill(); ctx.stroke(); }
     ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.moveTo(x + 14, y + 20); ctx.lineTo(x + 20, y + 24); ctx.stroke();
+  } else if (m === "jelly") {
+    ctx.globalAlpha = 0.9; rr(x + 3, y + 5, T - 6, T - 8, 12); ctx.fill(); ctx.globalAlpha = 1; ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.beginPath(); ctx.ellipse(x + 15, y + 15, 7, 4, -0.5, 0, 7); ctx.fill();
+    ctx.fillStyle = "rgba(47,138,61,.35)"; ctx.beginPath(); ctx.arc(x + T - 15, y + T - 14, 4, 0, 7); ctx.fill(); ctx.beginPath(); ctx.arc(x + 14, y + T - 12, 2.4, 0, 7); ctx.fill();
   }
 }
 const AMB = {   // 맵마다 떠다니는 분위기 효과
@@ -1098,6 +1174,7 @@ const AMB = {   // 맵마다 떠다니는 분위기 효과
   4: { n: 11, col: "rgba(255,255,255,.7)", sx: 3, sy: -16, sz: 4.4, shape: "bubble" },
   5: { n: 34, col: "rgba(200,214,255,1)", sx: 0, sy: 0, sz: 2.2, shape: "star" },
   6: { n: 34, col: "rgba(255,150,70,.85)", sx: 6, sy: -30, sz: 2.4, shape: "dot" },
+  7: { n: 18, col: "rgba(190,255,190,.65)", sx: 2, sy: -14, sz: 4.4, shape: "bubble" },
 };
 function drawAmbient(mi, now) {
   const a = AMB[mi]; if (!a) return; const W = COLS * TILE, H = ROWS * TILE, t = now / 1000;
@@ -1144,12 +1221,51 @@ function drawBossChar(B, now) {
   if (B.hurt && Math.floor(now / 70) % 2) { ctx.fillStyle = "rgba(255,255,255,.65)"; ctx.beginPath(); ctx.ellipse(x, hy, R * 1.0, R * 0.92, 0, 0, 7); ctx.fill(); }
   ctx.restore();
 }
+function drawSlimeKing(B, now) {
+  const x = B.x * TILE, y = B.y * TILE, R = TILE * 1.0, INK = INKC, T = TILE;
+  const col = B.rage ? "#ff8a4c" : "#5ed36b", light = B.rage ? "#ffd0a8" : "#c4f7c8", dark = B.rage ? "#a8431c" : "#2f8a3d";
+  if (B.charge) {   // 돌진 방향 예고선: 이 길에서 비켜야 해요!
+    const len = 4.2 * T, ang = Math.atan2(B.dy, B.dx), al = 0.18 + 0.14 * Math.abs(Math.sin(now / 90));
+    ctx.save(); ctx.translate(x, y); ctx.rotate(ang); ctx.fillStyle = `rgba(255,60,60,${al})`; ctx.fillRect(0, -R * 0.85, len, R * 1.7);
+    ctx.strokeStyle = "rgba(255,60,60,.55)"; ctx.lineWidth = 2; ctx.setLineDash([8, 6]); ctx.strokeRect(0, -R * 0.85, len, R * 1.7); ctx.restore();
+  }
+  let sx = 1 + Math.sin(now / 260) * 0.035, sy = 1 - Math.sin(now / 260) * 0.035, ox = 0;
+  if (B.charge) { sx = 1.22; sy = 0.7; ox = Math.sin(now / 35) * 2.2; }
+  const ang = Math.atan2(B.dy || 1, B.dx || 0);
+  if (B.dash) { ctx.save(); ctx.translate(x, y + R * 0.1); ctx.rotate(ang); ctx.fillStyle = "rgba(94,211,107,.28)"; ctx.beginPath(); ctx.ellipse(-R * 1.1, 0, R * 1.1, R * 0.7, 0, 0, 7); ctx.fill(); ctx.restore(); }
+  const by = y + (B.charge ? R * 0.18 : 0);
+  ctx.save(); ctx.lineJoin = "round"; ctx.lineCap = "round";
+  ctx.fillStyle = "rgba(0,0,0,.22)"; ctx.beginPath(); ctx.ellipse(x, y + R * 0.88, R * 1.0 * sx, R * 0.2, 0, 0, 7); ctx.fill();
+  ctx.translate(x + ox, by + R * 0.12);
+  if (B.dash) { ctx.rotate(ang); ctx.scale(1.3, 0.8); ctx.rotate(-ang); } else ctx.scale(sx, sy);
+  ctx.fillStyle = col; ctx.strokeStyle = INK; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(-R * 0.98, R * 0.62); ctx.bezierCurveTo(-R * 1.15, -R * 0.3, -R * 0.6, -R * 0.95, 0, -R * 0.95); ctx.bezierCurveTo(R * 0.6, -R * 0.95, R * 1.15, -R * 0.3, R * 0.98, R * 0.62); ctx.quadraticCurveTo(0, R * 0.9, -R * 0.98, R * 0.62); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = light; ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.ellipse(-R * 0.38, -R * 0.52, R * 0.3, R * 0.15, -0.5, 0, 7); ctx.fill(); ctx.globalAlpha = 1;
+  ctx.fillStyle = dark; ctx.globalAlpha = 0.28; for (const [a, b, r] of [[0.5, 0.15, 0.1], [0.6, 0.4, 0.06], [-0.62, 0.3, 0.08]]) { ctx.beginPath(); ctx.arc(R * a, R * b, R * r, 0, 7); ctx.fill(); } ctx.globalAlpha = 1;
+  ctx.restore();
+  ctx.save(); ctx.lineJoin = "round"; ctx.lineCap = "round";
+  const fy = by + R * 0.02, lx = Math.max(-1, Math.min(1, B.dx || 0)), ly = Math.max(-1, Math.min(1, B.dy || 0));
+  ctx.fillStyle = "#ffd36b"; ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x - R * 0.5, by - R * 0.7); ctx.lineTo(x - R * 0.42, by - R * 1.12); ctx.lineTo(x - R * 0.16, by - R * 0.86); ctx.lineTo(x, by - R * 1.2); ctx.lineTo(x + R * 0.16, by - R * 0.86); ctx.lineTo(x + R * 0.42, by - R * 1.12); ctx.lineTo(x + R * 0.5, by - R * 0.7); ctx.closePath(); ctx.fill(); ctx.stroke();
+  for (const s of [-1, 1]) {
+    const ex = x + s * R * 0.36, ey = fy - R * 0.1;
+    ctx.fillStyle = "#fff"; ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.beginPath(); ctx.ellipse(ex, ey, R * 0.22, R * 0.26, 0, 0, 7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = B.rage ? "#c1121f" : INK; ctx.beginPath(); ctx.ellipse(ex + lx * R * 0.08, ey + ly * R * 0.08, R * 0.12, R * 0.15, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(ex + lx * R * 0.08 - R * 0.04, ey + ly * R * 0.08 - R * 0.05, R * 0.04, 0, 7); ctx.fill();
+    ctx.strokeStyle = INK; ctx.lineWidth = 5.5; ctx.beginPath(); ctx.moveTo(ex + s * R * 0.26, ey - R * 0.36 - (B.charge ? R * 0.04 : 0)); ctx.lineTo(ex - s * R * 0.18, ey - R * 0.2); ctx.stroke();
+  }
+  ctx.fillStyle = "#1c5a28"; ctx.strokeStyle = INK; ctx.lineWidth = 3;
+  if (B.charge) { ctx.beginPath(); ctx.moveTo(x - R * 0.34, fy + R * 0.3); for (let i = 0; i <= 6; i++) ctx.lineTo(x - R * 0.34 + i * R * 0.113, fy + R * (i % 2 ? 0.4 : 0.26)); ctx.lineTo(x + R * 0.34, fy + R * 0.46); ctx.lineTo(x - R * 0.34, fy + R * 0.46); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  else { ctx.beginPath(); ctx.ellipse(x, fy + R * 0.34, R * 0.3, R * 0.17, 0, 0, Math.PI); ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.moveTo(x - R * 0.16, fy + R * 0.34); ctx.lineTo(x - R * 0.1, fy + R * 0.45); ctx.lineTo(x - R * 0.04, fy + R * 0.34); ctx.closePath(); ctx.fill(); }
+  ctx.fillStyle = "rgba(255,110,150,.45)"; for (const s of [-1, 1]) { ctx.beginPath(); ctx.ellipse(x + s * R * 0.66, fy + R * 0.22, R * 0.11, R * 0.07, 0, 0, 7); ctx.fill(); }
+  if (B.hurt && Math.floor(now / 70) % 2) { ctx.fillStyle = "rgba(255,255,255,.6)"; ctx.beginPath(); ctx.ellipse(x, by, R * 1.05, R * 0.85, 0, 0, 7); ctx.fill(); }
+  ctx.restore();
+}
 function drawBossBar(B) {
   const W = COLS * TILE, bw = 300, bh = 16, bx = (W - bw) / 2, by = 8, ratio = Math.max(0, B.hp / B.max);
   ctx.save(); ctx.fillStyle = "rgba(20,12,40,.7)"; rr(bx - 4, by - 3, bw + 8, bh + 6, 10); ctx.fill();
   ctx.fillStyle = B.rage ? "#ff4d6d" : "#9d6bff"; if (ratio > 0) { rr(bx, by, Math.max(10, bw * ratio), bh, 7); ctx.fill(); }
   ctx.fillStyle = "rgba(255,255,255,.3)"; rr(bx + 3, by + 2, Math.max(4, bw * ratio - 6), 4, 2); ctx.fill();
-  ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.lineWidth = 3; ctx.strokeStyle = "rgba(20,12,40,.9)"; const tx = `🐙 문어 대왕  ${B.hp}/${B.max}`; ctx.strokeText(tx, W / 2, by + bh / 2 + 1); ctx.fillStyle = "#fff"; ctx.fillText(tx, W / 2, by + bh / 2 + 1);
+  ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.lineWidth = 3; ctx.strokeStyle = "rgba(20,12,40,.9)"; const bm = bossMeta(), tx = `${bm.i} ${bm.n}  ${B.hp}/${B.max}`; ctx.strokeText(tx, W / 2, by + bh / 2 + 1); ctx.fillStyle = "#fff"; ctx.fillText(tx, W / 2, by + bh / 2 + 1);
   ctx.restore();
 }
 function drawBubble(text, x, y) {   // 채팅 말풍선
@@ -1185,7 +1301,7 @@ function drawView(v, now) {
     if (g === 1) drawHard(th, x, y, now); else if (g === 2) drawSoft(th, x, y);
   }
   drawAmbient(mIdx, now);
-  if (v.boss && v.boss.alive) drawBossChar(v.boss, now);
+  if (v.boss && v.boss.alive) (v.boss.kind === "slime" ? drawSlimeKing : drawBossChar)(v.boss, now);
   const order = S.order || [], WH = ROWS * TILE;
   const alive = [...v.players].filter((p) => p.alive).sort((a, b) => a.y - b.y);
   alive.forEach((p) => {
@@ -1235,7 +1351,7 @@ function updateSide(v) {
     const st = !p ? "" : !p.alive ? "💀 탈락" : p.trapped ? "🫧 갇힘!" : `${mini("b", p.bm)}${mini("r", p.rg)}${mini("s", p.sp)}${p.nd ? mini("n", p.nd) : ""}`;
     const w = mode === "team" || mode === "boss" ? "" : `<span class="wins">${S.wins[id] || 0}</span>`;
     return `<li class="${id === myId ? "me" : ""} ${p && !p.alive ? "dead" : ""} ${p && p.trapped ? "trap" : ""}">${avHTML(id)}<div class="pinfo"><div class="pname">${team >= 0 ? `<span class="tm tm${team}">${team ? "파랑" : "빨강"}</span>` : ""}${esc(nameOf(id))}${id === myId ? " (나)" : ""}</div><div class="pst">${st}</div></div>${w}</li>`;
-  }).join("") + (mode === "boss" && v && v.boss ? `<li style="justify-content:center;font-family:var(--display);font-size:18px;background:#f3ecff">🐙 보스 ${v.boss.hp}/${v.boss.max}</li>` : "") + (mode === "team" ? `<li style="justify-content:center;font-family:var(--display);font-size:20px;background:#fff">${TEAM_NAME[0]} ${S.twins[0]} : ${S.twins[1]} ${TEAM_NAME[1]}</li>` : ""));
+  }).join("") + (mode === "boss" && v && v.boss ? `<li style="justify-content:center;font-family:var(--display);font-size:18px;background:#f3ecff">${bossMeta().i} 보스 ${v.boss.hp}/${v.boss.max}</li>` : "") + (mode === "team" ? `<li style="justify-content:center;font-family:var(--display);font-size:20px;background:#fff">${TEAM_NAME[0]} ${S.twins[0]} : ${S.twins[1]} ${TEAM_NAME[1]}</li>` : ""));
   const mi = order.indexOf(myId), me = v && mi >= 0 ? v.players[mi] : null;
   const card = (k, label, col, n, max, num, used) => `<div class="st"><img src="${ICON_URL[k]}"><div><b>${label}</b>${pips(n, max, col, used)}</div><span class="num">${num}</span></div>`;
   setHTML($("hud"), me ? card("b", "물풍선", "#3d9bff", me.bm, 7, `${me.bm - me.out}/${me.bm}`, me.out) + card("r", "물줄기", "#17a6e0", me.rg, 8, me.rg) + card("s", "속도", "#ff6b8a", me.sp, 5, me.sp) + card("n", "바늘", "#ff5c7a", me.nd, 3, me.nd) : `<div class="st"><b style="font-size:18px;color:var(--ink)">👀 관전 중</b></div>`);
@@ -1252,7 +1368,7 @@ function render() {
   const inplay = ["countdown", "playing", "roundEnd"].includes(S.phase);
   if (inplay && !document.body.classList.contains("inplay")) scrollTo(0, 0);
   document.body.classList.toggle("inplay", inplay);
-  $("roundInfo").innerHTML = lobbyLike ? "🎈 대기실" : (isBossRun() ? `${MAPS[S.curMap].icon} 보스전 · ${MAPS[S.curMap].n}` : `라운드 <b>${S.round}</b> · ${S.winsTo}승 먼저 · ${MAPS[Math.max(0, S.curMap)].icon} ${MAPS[Math.max(0, S.curMap)].n}`);
+  $("roundInfo").innerHTML = lobbyLike ? "🎈 대기실" : (isBossRun() ? `${MAPS[S.curMap].icon} 보스전(${BOSS_LV[S.bossLv].name}) · ${MAPS[S.curMap].n}` : `라운드 <b>${S.round}</b> · ${S.winsTo}승 먼저 · ${MAPS[Math.max(0, S.curMap)].icon} ${MAPS[Math.max(0, S.curMap)].n}`);
   if (lobbyLike) {
     $("timeInfo").innerHTML = "";
     const bossSel = Number.isInteger(S.map) && !!MAPS[S.map].boss;
@@ -1267,16 +1383,17 @@ function render() {
     const mapOpts = [["rand", "🎲 랜덤"]].concat(MAPS.map((m, i) => [i, `${m.icon} ${m.n}`]));
     const mapName = S.map === "rand" ? "🎲 랜덤" : `${MAPS[S.map].icon} ${MAPS[S.map].n}`;
     const settings = isHost
-      ? `<div class="setrow"><span class="lbl">🎮 모드</span>${sel("setMode", [["ffa", "개인전"], ["team", "팀전 (빨강 vs 파랑)"]], S.mode)}<span class="lbl">🏁 승리</span>${sel("setWins", [[1, "1승"], [2, "2승 먼저"], [3, "3승 먼저"]], S.winsTo)}<span class="lbl">🤖 봇</span>${sel("setBots", Array.from({ length: 8 }, (_, i) => [i, i + "명"]), S.bots)}<span class="lbl">🗺️ 맵</span>${sel("setMap", mapOpts, S.map)}</div>`
-      : `<div class="setrow"><span class="lbl">🎮 모드</span><span class="pill">${S.mode === "team" ? "팀전" : "개인전"}</span><span class="lbl">🏁 승리</span><span class="pill">${S.winsTo}승 먼저</span><span class="lbl">🤖 봇</span><span class="pill">${S.bots}명</span><span class="lbl">🗺️ 맵</span><span class="pill">${mapName}</span></div>`;
+      ? `<div class="setrow"><span class="lbl">🎮 모드</span>${sel("setMode", [["ffa", "개인전"], ["team", "팀전 (빨강 vs 파랑)"]], S.mode)}<span class="lbl">🏁 승리</span>${sel("setWins", [[1, "1승"], [2, "2승 먼저"], [3, "3승 먼저"]], S.winsTo)}<span class="lbl">🤖 봇</span>${sel("setBots", Array.from({ length: 8 }, (_, i) => [i, i + "명"]), S.bots)}<span class="lbl">🗺️ 맵</span>${sel("setMap", mapOpts, S.map)}${bossSel ? `<span class="lbl">🐙 보스 난이도</span>${sel("setLv", BOSS_LV.map((l, i) => [i, l.name]), S.bossLv)}` : ""}</div>`
+      : `<div class="setrow"><span class="lbl">🎮 모드</span><span class="pill">${S.mode === "team" ? "팀전" : "개인전"}</span><span class="lbl">🏁 승리</span><span class="pill">${S.winsTo}승 먼저</span><span class="lbl">🤖 봇</span><span class="pill">${S.bots}명</span><span class="lbl">🗺️ 맵</span><span class="pill">${mapName}</span>${bossSel ? `<span class="lbl">🐙 난이도</span><span class="pill">${BOSS_LV[S.bossLv].name}</span>` : ""}</div>`;
     const myK = charK(myId), takenSet = new Set(humans.filter((id) => id !== myId).map((id) => charK(id)));
     const picker = mySpec ? `<p class="sub">👀 관전 중이에요. 채팅은 할 수 있어요!</p>`
       : `<div class="pickwrap"><div class="lbl2">🎭 내 캐릭터 고르기</div><div class="pickgrid">${CHARS.map((H, k) => `<button class="pk ${k === myK ? "on" : ""}" data-pick="${k}" ${takenSet.has(k) ? "disabled" : ""}><img src="${charURL(k)}">${H.n}</button>`).join("")}</div></div>`;
-    if (setHTML(lp, `<h2>🎈 대기실</h2><p class="sub">참가 ${total}명 (최대 8명) · ${isHost ? "방장이 시작하면 게임이 시작돼요" : "방장(👑)이 시작하길 기다리는 중..."}</p>${rows}${specLine}${picker}<button id="specBtn" class="togglebtn">${mySpec ? "🎮 참가하기" : "👀 관전하기"}</button><div class="setbox">${settings}</div>${bossSel ? '<p class="sub">🐙 보스전: 모두 한 팀이 돼서 문어 대왕을 쓰러뜨려요! (봇도 같은 편이에요)</p>' : ""}${isHost ? `<button id="startBtn" class="primary" ${total < (bossSel ? 1 : 2) ? "disabled" : ""}>게임 시작! 🚀</button><p class="sub">⚠️ 방장은 게임 중 이 탭을 계속 켜두세요 (게임 계산을 맡아요)</p>` : ""}${S.final ? `<p class="sub">지난 판 결과: ${esc(S.final)}</p>` : ""}`)) {
+    if (setHTML(lp, `<h2>🎈 대기실</h2><p class="sub">참가 ${total}명 (최대 8명) · ${isHost ? "방장이 시작하면 게임이 시작돼요" : "방장(👑)이 시작하길 기다리는 중..."}</p>${rows}${specLine}${picker}<button id="specBtn" class="togglebtn">${mySpec ? "🎮 참가하기" : "👀 관전하기"}</button><div class="setbox">${settings}</div>${bossSel ? `<p class="sub">${MAPS[S.map].bicon} 보스전: 모두 한 팀이 돼서 ${MAPS[S.map].bname}을 쓰러뜨려요! (봇도 같은 편이에요)</p>` : ""}${isHost ? `<button id="startBtn" class="primary" ${total < (bossSel ? 1 : 2) ? "disabled" : ""}>게임 시작! 🚀</button><p class="sub">⚠️ 방장은 게임 중 이 탭을 계속 켜두세요 (게임 계산을 맡아요)</p>` : ""}${S.final ? `<p class="sub">지난 판 결과: ${esc(S.final)}</p>` : ""}`)) {
       if (isHost) {
         $("setMode").onchange = () => emit({ t: "settings", mode: $("setMode").value });
         $("setWins").onchange = () => emit({ t: "settings", winsTo: +$("setWins").value });
         $("setBots").onchange = () => emit({ t: "settings", bots: +$("setBots").value });
+        if ($("setLv")) $("setLv").onchange = () => emit({ t: "settings", bossLv: +$("setLv").value });
         $("setMap").onchange = () => { const v = $("setMap").value; emit({ t: "settings", map: v === "rand" ? "rand" : +v }); };
         $("startBtn").onclick = () => emit({ t: "start" });
       }
@@ -1294,7 +1411,7 @@ function render() {
   else if (S.phase === "roundEnd") { setHTML(ov, `<h2>${esc(S.msg)}</h2>`); }
   else if (S.phase === "gameOver") {
     ov.classList.add("solid"); ov.style.background = "";
-    setHTML(ov, `<div style="font-size:50px">🏆</div><h2>${esc(S.final)}</h2><div class="setbox">${isBossRun() ? '<div class="pill">🐙 문어 대왕 vs 우리 모두</div>' : S.mode === "team" ? `<div class="pill">${TEAM_NAME[0]} ${S.twins[0]} : ${S.twins[1]} ${TEAM_NAME[1]}</div>` : S.order.slice().sort((a, b) => (S.wins[b] || 0) - (S.wins[a] || 0)).map((id) => `<div class="pill">${faceOf(id)} ${esc(nameOf(id))} · ${S.wins[id] || 0}승</div>`).join("")}</div>${isHost ? '<button id="againBtn" class="primary" style="pointer-events:auto">대기실로</button>' : "<p>방장이 다음 판을 정할 거예요</p>"}`);
+    setHTML(ov, `<div style="font-size:50px">🏆</div><h2>${esc(S.final)}</h2><div class="setbox">${isBossRun() ? `<div class="pill">${bossMeta().i} ${bossMeta().n} vs 우리 모두</div>` : S.mode === "team" ? `<div class="pill">${TEAM_NAME[0]} ${S.twins[0]} : ${S.twins[1]} ${TEAM_NAME[1]}</div>` : S.order.slice().sort((a, b) => (S.wins[b] || 0) - (S.wins[a] || 0)).map((id) => `<div class="pill">${faceOf(id)} ${esc(nameOf(id))} · ${S.wins[id] || 0}승</div>`).join("")}</div>${isHost ? '<button id="againBtn" class="primary" style="pointer-events:auto">대기실로</button>' : "<p>방장이 다음 판을 정할 거예요</p>"}`);
     if ($("againBtn")) $("againBtn").onclick = () => emit({ t: "lobby" });
   }
   if (S.phase !== "playing") ov.style.background = S.phase === "gameOver" ? "" : "rgba(255,255,255,.55)";
