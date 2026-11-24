@@ -767,7 +767,7 @@ function sendSnap(withGrid) {
   net.send({ t: "snap", k: S.rid, h: performance.now(), s: makeSnap(G, needG) });
 }
 let snapAcc = 0;
-setInterval(() => {
+function hostTick() {
   const now = performance.now(), dt = Math.min(0.1, (now - lastTick) / 1000); lastTick = now;
   if (!isHost || !S || !G) return;
   const left = hostEnds - Date.now();
@@ -778,7 +778,14 @@ setInterval(() => {
     const res = checkEnd(G); if (res) endRound(res);
   } else if (S.phase === "roundEnd" && left <= 0) afterRoundEnd();
   snapAcc += dt * 1000; if (snapAcc >= SNAP_MS && ["countdown", "playing", "roundEnd"].includes(S.phase)) { snapAcc = 0; sendSnap(false); }
-}, TICK_MS);
+}
+// 방장 탭이 뒤에 가려져도 게임이 느려지지 않게: 브라우저는 안 보이는 탭의 setInterval을 1초에 한 번으로 늦추지만, 워커(별도 일꾼)의 타이머는 안 늦춰져요
+let tickFallback = null;
+const useFallback = () => { if (!tickFallback) tickFallback = setInterval(hostTick, TICK_MS); };
+try {
+  const wk = new Worker(URL.createObjectURL(new Blob(["setInterval(function(){postMessage(0)}," + TICK_MS + ")"], { type: "text/javascript" })));
+  wk.onmessage = hostTick; wk.onerror = useFallback;
+} catch (e) { useFallback(); }
 
 // ===================== 메시지 처리 =====================
 function handle(m) {
