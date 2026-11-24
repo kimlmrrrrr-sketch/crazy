@@ -290,22 +290,30 @@ function boxBlocked(G, x, y, p) {
   for (let r = y0; r <= y1; r++) for (let c = x0; c <= x1; c++) if (blockedCell(G, c, r, p)) return true;
   return false;
 }
-function movePlayer(G, p, dir, dist) {
-  if (!dir) return;
-  const dx = dir === 3 ? -1 : dir === 4 ? 1 : 0, dy = dir === 1 ? -1 : dir === 2 ? 1 : 0;
-  p.face = dir;
-  const nx = p.x + dx * dist, ny = p.y + dy * dist;
-  if (!boxBlocked(G, nx, ny, p)) { p.x = nx; p.y = ny; return; }
-  if (dx) {           // 가로로 막힘: 벽에 붙이고, 열린 줄이 있으면 그쪽으로 살짝 밀어줌(모서리 걸림 방지)
-    const ac = Math.floor(nx + dx * HALF), cr = Math.floor(p.y);
-    const edge = dx > 0 ? ac - HALF - 0.001 : ac + 1 + HALF + 0.001;
-    p.x = dx > 0 ? Math.min(nx, Math.max(p.x, edge)) : Math.max(nx, Math.min(p.x, edge));
-    if (!blockedCell(G, ac, cr, p)) { const t = cr + 0.5, d = Math.min(dist, Math.abs(t - p.y)); const ty = p.y + Math.sign(t - p.y) * d; if (!boxBlocked(G, p.x, ty, p)) p.y = ty; }
-  } else {
-    const ar = Math.floor(ny + dy * HALF), cc = Math.floor(p.x);
-    const edge = dy > 0 ? ar - HALF - 0.001 : ar + 1 + HALF + 0.001;
-    p.y = dy > 0 ? Math.min(ny, Math.max(p.y, edge)) : Math.max(ny, Math.min(p.y, edge));
-    if (!blockedCell(G, cc, ar, p)) { const t = cc + 0.5, d = Math.min(dist, Math.abs(t - p.x)); const tx = p.x + Math.sign(t - p.x) * d; if (!boxBlocked(G, tx, p.y, p)) p.x = tx; }
+function movePlayer(G, p, dir, dist) {   // 칸 단위 이동: 칸 중앙에서 중앙으로만 움직이고, 방향은 칸 중앙에서 바뀜 (크레이지 아케이드 느낌)
+  const DX = [0, 0, 0, -1, 1], DY = [0, -1, 1, 0, 0];   // 1=위 2=아래 3=왼 4=오른
+  if (dir) p.face = dir;
+  let rem = dist, guard = 0;
+  while (rem > 1e-6 && guard++ < 8) {
+    if (!p.mv) {
+      const cx = Math.floor(p.x) + 0.5, cy = Math.floor(p.y) + 0.5;
+      if (Math.abs(p.x - cx) > 1e-4) p.mv = { fx: p.x, fy: p.y, tx: cx, ty: p.y };          // 중앙에서 벗어나 있으면 먼저 중앙으로
+      else if (Math.abs(p.y - cy) > 1e-4) p.mv = { fx: p.x, fy: p.y, tx: p.x, ty: cy };
+      else {
+        if (!dir) return;
+        if (blockedCell(G, Math.floor(p.x) + DX[dir], Math.floor(p.y) + DY[dir], p)) return;   // 앞이 막혀 있으면 그 자리에 멈춤
+        p.mv = { fx: cx, fy: cy, tx: cx + DX[dir], ty: cy + DY[dir] };
+      }
+    } else if (dir && !p.bot) {   // 가던 길의 반대 방향 키 → 바로 돌아감 (봇은 칸 중앙에서만 방향을 바꿈)
+      const m = p.mv, hx = Math.sign(m.tx - m.fx), hy = Math.sign(m.ty - m.fy);
+      if ((hx || hy) && hx === -DX[dir] && hy === -DY[dir]) p.mv = { fx: m.tx, fy: m.ty, tx: m.fx, ty: m.fy };
+    }
+    let m = p.mv;
+    const tc = Math.floor(m.tx), tr = Math.floor(m.ty);
+    if ((tc !== Math.floor(p.x) || tr !== Math.floor(p.y)) && blockedCell(G, tc, tr, p)) { p.mv = m = { fx: m.tx, fy: m.ty, tx: m.fx, ty: m.fy }; }   // 가려던 칸에 풍선이 놓이면 되돌아감
+    const d = Math.hypot(m.tx - p.x, m.ty - p.y);
+    if (d <= rem + 1e-9) { p.x = m.tx; p.y = m.ty; rem -= d; p.mv = null; }
+    else { p.x += (m.tx - p.x) / d * rem; p.y += (m.ty - p.y) / d * rem; rem = 0; }
   }
 }
 function tryBomb(G, p, wc, wr) {
@@ -620,6 +628,68 @@ function makeLocalNet(room) {   // 테스트용: 같은 브라우저의 탭끼�
   api.leave = () => { api.closed = true; clearInterval(iv); bye(); removeEventListener("beforeunload", bye); bc.close(); };
   return api;
 }
+// ===================== 직접 연결 (WebRTC) =====================
+// 서버(Supabase)는 "연결 신호"만 전달하고, 움직임·키 입력은 방장↔친구가 직접 주고받아요. 직접 연결이 안 되면 예전처럼 서버를 거쳐요.
+const RTC_CFG = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }] };
+const p2p = { peers: {}, snapQ: 0, tries: {} };
+const p2pOpen = (id) => { const p = p2p.peers[id]; return !!(p && p.dcR && p.dcU && p.dcR.readyState === "open" && p.dcU.readyState === "open"); };
+function p2pSend(id, msg, str, unrel) {
+  if (!p2pOpen(id)) return false;
+  try { p2p.peers[id][unrel ? "dcU" : "dcR"].send(str || JSON.stringify(msg)); return true; } catch (e) { return false; }
+}
+function p2pClose(id) { const p = p2p.peers[id]; if (!p) return; delete p2p.peers[id]; try { p.pc.close(); } catch (e) {} }
+function p2pReset() { for (const id of Object.keys(p2p.peers)) p2pClose(id); p2p.tries = {}; }
+function p2pMake(id, initiator) {
+  const pc = new RTCPeerConnection(RTC_CFG), peer = { pc, id, t: performance.now(), cand: [], remoteSet: false, dcR: null, dcU: null };
+  p2p.peers[id] = peer;
+  pc.onicecandidate = (e) => { if (e.candidate && net) net.send({ t: "rtc", to: id, from: myId, k: "ice", d: e.candidate.toJSON() }); };
+  pc.onconnectionstatechange = () => { if (["failed", "closed"].includes(pc.connectionState) && p2p.peers[id] === peer) p2pClose(id); };
+  const bind = (dc) => {
+    if (dc.label === "u") peer.dcU = dc; else peer.dcR = dc;
+    dc.onmessage = (e) => { try { handle(JSON.parse(e.data)); } catch (x) {} };
+    dc.onclose = () => { if (p2p.peers[id] === peer) p2pClose(id); };
+  };
+  if (initiator) { bind(pc.createDataChannel("r", { ordered: true })); bind(pc.createDataChannel("u", { ordered: false, maxRetransmits: 0 })); }
+  else pc.ondatachannel = (e) => bind(e.channel);
+  return peer;
+}
+async function p2pFlush(peer) { peer.remoteSet = true; for (const c of peer.cand) { try { await peer.pc.addIceCandidate(c); } catch (e) {} } peer.cand = []; }
+async function p2pSignal(m) {
+  try {
+    if (m.k === "offer") {
+      if (!isHost) return;
+      p2pClose(m.from); const peer = p2pMake(m.from, false);
+      await peer.pc.setRemoteDescription(m.d); await p2pFlush(peer);
+      const ans = await peer.pc.createAnswer(); await peer.pc.setLocalDescription(ans);
+      net && net.send({ t: "rtc", to: m.from, from: myId, k: "answer", d: peer.pc.localDescription.toJSON() });
+    } else if (m.k === "answer") {
+      const peer = p2p.peers[m.from]; if (!peer) return; await peer.pc.setRemoteDescription(m.d); await p2pFlush(peer);
+    } else if (m.k === "ice") {
+      const peer = p2p.peers[m.from]; if (!peer) return;
+      if (peer.remoteSet) await peer.pc.addIceCandidate(m.d); else peer.cand.push(m.d);
+    }
+  } catch (e) {}
+}
+async function p2pConnect(hid) {
+  p2pClose(hid); const peer = p2pMake(hid, true);
+  const off = await peer.pc.createOffer(); await peer.pc.setLocalDescription(off);
+  net && net.send({ t: "rtc", to: hid, from: myId, k: "offer", d: peer.pc.localDescription.toJSON() });
+}
+setInterval(() => {
+  if (!net || !settled || typeof RTCPeerConnection === "undefined") return;
+  if (isHost) { for (const id of Object.keys(p2p.peers)) if (!present[id]) p2pClose(id); return; }
+  const hid = hostOrder()[0]; if (!hid || hid === myId) return;
+  for (const id of Object.keys(p2p.peers)) if (id !== hid) p2pClose(id);
+  const p = p2p.peers[hid];
+  if (p && !p2pOpen(hid) && performance.now() - p.t > 10000) { p2pClose(hid); }   // 10초 안에 안 열리면 포기하고 다시
+  if (!p2p.peers[hid] && (p2p.tries[hid] || 0) < 4) { p2p.tries[hid] = (p2p.tries[hid] || 0) + 1; p2pConnect(hid).catch(() => {}); }
+}, 1500);
+const sendToHost = (msg) => { const hid = hostOrder()[0]; if (!isHost && hid && p2pSend(hid, msg)) return; if (net) net.send(msg); };
+function sendSnapMsg(msg) {
+  msg.q = ++p2p.snapQ; const str = JSON.stringify(msg); let need = false;
+  for (const id of presentIds()) { if (id === myId) continue; if (!p2pSend(id, msg, str, true)) need = true; }
+  if (need && net) net.send(msg);   // 직접 연결 안 된 사람이 있으면 서버로도 보냄 (이미 받은 사람은 번호로 걸러냄)
+}
 function emit(msg) { if (!net) return; net.send(msg); handle(msg); }   // 모두에게 + 나도 처리
 
 // ===================== 입장 =====================
@@ -657,6 +727,7 @@ function enter(code, mode, spec) {
 }
 function leaveRoom(msg) {
   if (net && net.leave) net.leave();
+  p2pReset();
   net = null; present = {}; S = null; G = null; isHost = false; settled = false; snaps = []; mySpec = false;
   $("game").classList.add("hidden"); $("join").classList.remove("hidden");
   history.replaceState(null, "", location.pathname); alertBox(msg);
@@ -764,7 +835,7 @@ function sendSnap(withGrid) {
   // 블록이 바뀌었거나, 1초가 지났거나(놓친 사람을 위해), 새 라운드면 블록 정보를 같이 보냄
   const needG = withGrid || G.gv !== lastGv || Date.now() - lastGridAt > 1000;
   if (needG) { lastGv = G.gv; lastGridAt = Date.now(); }
-  net.send({ t: "snap", k: S.rid, h: performance.now(), s: makeSnap(G, needG) });
+  sendSnapMsg({ t: "snap", k: S.rid, h: performance.now(), s: makeSnap(G, needG) });
 }
 let snapAcc = 0;
 function hostTick() {
@@ -803,8 +874,9 @@ function handle(m) {
         if (!taken) { S.charOf[m.from] = m.ch; pushState(); }
       }
       break;
-    case "state": { S = m.s; localEnds = Date.now() + S.endsIn; if (!isHost && S.rid !== (handle.rid || 0)) { snaps = []; viewGrid = ""; snapOff = null; predPos = null; } handle.rid = S.rid; render(); break; }
+    case "state": { S = m.s; localEnds = Date.now() + S.endsIn; if (!isHost && S.rid !== (handle.rid || 0)) { snaps = []; viewGrid = ""; snapOff = null; predPos = null; lastSnapQ = 0; } handle.rid = S.rid; render(); break; }
     case "snap": if (!isHost && S && m.k === S.rid) {
+      if (m.q) { if (m.q <= lastSnapQ && lastSnapQ - m.q < 200) break; lastSnapQ = m.q; }   // 같은 화면 정보가 두 길로 오면 한 번만
       const s = m.s; if (s.g) viewGrid = s.g;
       const np = performance.now(); let rt = np;
       if (typeof m.h === "number") {   // 방장 시계 기준 시간으로 펴서, 도착 시간이 들쭉날쭉해도 부드럽게 보이게 함
@@ -812,10 +884,12 @@ function handle(m) {
         if (snapOff === null || o < snapOff || Math.abs(o - snapOff) > 3000) snapOff = o; else snapOff += 0.02;
         rt = m.h + snapOff;
       }
-      snaps.push({ rt, s }); if (snaps.length > 10) snaps.shift();
+      if (lastSnapArr) { const gap = Math.min(600, np - lastSnapArr); jitMax = Math.max(gap, jitMax * 0.985); } lastSnapArr = np;
+      snaps.push({ rt, s }); if (snaps.length > 14) snaps.shift();
     } break;
     case "in": if (isHost) handleInput(m.from, m); break;
-    case "ping": if (isHost) net.send({ t: "pong", to: m.from, h: m.h }); break;
+    case "ping": if (isHost) { const pg = { t: "pong", to: m.from, h: m.h }; if (!p2pSend(m.from, pg) && net) net.send(pg); } break;
+    case "rtc": if (m.to === myId) p2pSignal(m); break;
     case "pong": if (m.to === myId && typeof m.h === "number") { const r = performance.now() - m.h; pingMs = pingMs ? pingMs * 0.6 + r * 0.4 : r; showPing(); } break;
     case "team": if (isHost && S && (S.phase === "lobby" || S.phase === "gameOver") && present[m.from]) { S.teamOf[m.from] = m.team === 1 ? 1 : 0; pushState(); } break;
     case "settings":
@@ -842,13 +916,13 @@ function handleInput(from, m) {
   if (m.bomb) tryBomb(G, p, m.c, m.r);
   if (m.needle) tryNeedle(G, p);
 }
-let pingMs = 0, pingEl = null;
+let lastSnapQ = 0, pingMs = 0, pingEl = null, lastDirAt = 0, viewDelay = 150, jitMax = 100, lastSnapArr = 0;
 function showPing() {
   if (!pingEl) { pingEl = document.createElement("div"); pingEl.style.cssText = "position:fixed;right:10px;bottom:8px;z-index:50;padding:3px 9px;border-radius:99px;font:700 12px sans-serif;background:rgba(255,255,255,.9);border:2px solid #3b3355;pointer-events:none"; document.body.appendChild(pingEl); }
-  const v = Math.round(pingMs); pingEl.textContent = "📶 핑 " + v + "ms"; pingEl.style.color = v < 120 ? "#1a9a4a" : v < 250 ? "#c77d00" : "#d62839";
+  const v = Math.round(pingMs); pingEl.textContent = "📶 핑 " + v + "ms " + (p2pOpen(hostOrder()[0]) ? "⚡직접" : "☁️서버"); pingEl.style.color = v < 120 ? "#1a9a4a" : v < 250 ? "#c77d00" : "#d62839";
   pingEl.style.display = S && S.phase !== "lobby" && !isHost ? "block" : "none";
 }
-setInterval(() => { if (!isHost && net && S) net.send({ t: "ping", from: myId, h: performance.now() }); }, 2000);
+setInterval(() => { if (!isHost && net && S) sendToHost({ t: "ping", from: myId, h: performance.now() }); }, 2000);
 // 내가 놓은 물풍선은 방장 답을 기다리지 않고 바로 보이게 (가짜 풍선; 진짜가 오면 교체)
 const ghosts = [];
 function ghostBomb() {
@@ -858,12 +932,12 @@ function ghostBomb() {
   if (lastMe.out + ghosts.length >= lastMe.bm || predGrid[r * COLS + c] || ghosts.some((g) => g.c === c && g.r === r) || (lastBalloons || []).some((b) => b.c === c && b.r === r)) return cell;
   ghosts.push({ c, r, t: now }); return cell;
 }
-function sendInput(o) { if (o && o.bomb) { const g = ghostBomb(); if (g) { o.c = g.c; o.r = g.r; } } if (isHost) handleInput(myId, o); else if (net) net.send(Object.assign({ t: "in", from: myId }, o)); }
+function sendInput(o) { if (o && o.bomb) { const g = ghostBomb(); if (g) { o.c = g.c; o.r = g.r; } } if (isHost) handleInput(myId, o); else if (net) sendToHost(Object.assign({ t: "in", from: myId }, o)); }
 
 // ===================== 키 / 터치 입력 =====================
 const KEYDIR = { ArrowUp: 1, w: 1, W: 1, ArrowDown: 2, s: 2, S: 2, ArrowLeft: 3, a: 3, A: 3, ArrowRight: 4, d: 4, D: 4 };
 let held = [], curDir = 0;
-function setDir() { const d = held.length ? held[held.length - 1] : 0; if (d !== curDir) { curDir = d; sendInput({ d }); } }
+function setDir() { const d = held.length ? held[held.length - 1] : 0; if (d !== curDir) { curDir = d; lastDirAt = performance.now(); sendInput({ d }); } }
 function typing(e) { const t = e.target && e.target.tagName; return t === "INPUT" || t === "SELECT" || t === "TEXTAREA"; }
 addEventListener("keydown", (e) => {
   if (typing(e) || !S) return;
@@ -891,20 +965,25 @@ function decode(s) {
     balloons: s.b.map((a) => ({ c: a[0], r: a[1], f: a[2] / 10 })), boss: s.bo ? { x: s.bo[0], y: s.bo[1], hp: s.bo[2], max: s.bo[3], alive: !!(s.bo[4] & 1), hurt: !!(s.bo[4] & 2), rage: !!(s.bo[4] & 4), charge: !!(s.bo[4] & 8), dash: !!(s.bo[4] & 16), dx: s.bo[5] || 0, dy: s.bo[6] || 0, kind: s.bo.length > 5 ? "slime" : "octo" } : null, flames: s.f, items: s.i.map((a) => ({ c: a[0], r: a[1], t: ITEM_KEYS[a[2]] })), tl: s.tl };
 }
 // 내 캐릭터는 방장 답을 기다리지 않고 바로 움직이게 (방장이 알려주는 위치로 부드럽게 맞춤)
+const predP = { id: "", x: 0, y: 0, face: 2, mv: null };
 function predictMe(v, now) {
   const mi = (S.order || []).indexOf(myId);
   const me = mi >= 0 ? v.players[mi] : null;
-  if (!me || S.phase !== "playing" || !me.alive || me.trapped || !viewGrid || !snaps.length) { predPos = null; predAt = now; return; }
+  if (!me || S.phase !== "playing" || !me.alive || me.trapped || !viewGrid || !snaps.length) { predPos = null; predP.mv = null; predAt = now; return; }
   if (predGridStr !== viewGrid) { predGridStr = viewGrid; predGrid = Uint8Array.from(viewGrid, (c) => c.charCodeAt(0) - 48); }
   const dt = Math.min(0.05, Math.max(0, (now - predAt) / 1000)); predAt = now;
   const hp = snaps[snaps.length - 1].s.p[mi], hx = hp[0], hy = hp[1];
-  if (!predPos || Math.hypot(predPos.x - hx, predPos.y - hy) > 1.5) predPos = { x: hx, y: hy };
+  const rtt = Math.min(900, pingMs || 150), settling = now - lastDirAt < rtt + 150;
+  const snapDist = Math.max(1.5, (3.3 + 0.55 * me.sp) * (rtt / 1000) + 1.2);   // 핑이 높으면 그만큼 어긋나는 게 정상이라 기준을 넓힘
+  if (!predPos || Math.hypot(predPos.x - hx, predPos.y - hy) > snapDist) { predPos = { x: hx, y: hy }; predP.mv = null; }
   const near = (b) => Math.abs(predPos.x - (b.c + 0.5)) < 0.5 + HALF && Math.abs(predPos.y - (b.r + 0.5)) < 0.5 + HALF;
   const fg = { grid: predGrid, balloons: v.balloons.map((b) => ({ c: b.c, r: b.r, pass: near(b) ? [myId] : [] })) };
-  const p = { id: myId, x: predPos.x, y: predPos.y, face: 2 };
+  const p = predP; p.id = myId; p.x = predPos.x; p.y = predPos.y;
   movePlayer(fg, p, curDir, (3.3 + 0.55 * me.sp) * dt);
   predPos.x = p.x; predPos.y = p.y;
-  const ex = hx - predPos.x, ey = hy - predPos.y, err = Math.hypot(ex, ey), k = Math.min(1, dt * (curDir === 0 || err > 0.6 ? 8 : 1.2));
+  let ex = hx - predPos.x, ey = hy - predPos.y;
+  if (p.mv) { if (p.mv.tx !== p.mv.fx) ey = 0; else ex = 0; }   // 가는 줄 방향으로만 보정 (칸 줄에서 벗어나지 않게)
+  const err = Math.hypot(ex, ey), k = settling ? 0 : Math.min(1, dt * (curDir === 0 || err > 0.6 ? 8 : 1.2));
   predPos.x += ex * k; predPos.y += ey * k;
   me.x = predPos.x; me.y = predPos.y; if (curDir) me.d = curDir;
 }
@@ -921,7 +1000,8 @@ function currentView(now) {
 function currentView0(now) {
   if (isHost && G) { const s = makeSnap(G, true); viewGrid = s.g; return decode(s); }
   if (!snaps.length) return null;
-  const target = now - 150; let a = null, b = null;
+  viewDelay += (Math.max(150, Math.min(500, jitMax + 60)) - viewDelay) * 0.03;   // 천천히 맞춰감
+  const target = now - viewDelay; let a = null, b = null;
   for (let i = 0; i < snaps.length; i++) { if (snaps[i].rt <= target) a = snaps[i]; else { b = snaps[i]; break; } }
   if (!a) a = snaps[0];
   if (!b) return decode(a.s);
