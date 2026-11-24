@@ -878,22 +878,22 @@ for (const k in ICONS) { ICON_URL[k] = "data:image/svg+xml;charset=utf-8," + enc
 const mini = (k, n) => `<img class="mi" src="${ICON_URL[k]}">${n}`;
 const pips = (n, max, col, used) => `<div class="pips" style="--c:${col}">${Array.from({ length: max }, (_, i) => `<i class="${i < n ? (used && i < used ? "use" : "on") : ""}"></i>`).join("")}</div>`;
 function rr(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
-// ---------- 크레이지 아케이드 캐릭터 12종 ----------
+// ---------- 오리지널 캐릭터 12종 (직접 그린 귀여운 도형) ----------
 const lastPos = {};
 const INKC = "#3b3355";
 const CHARS = [
-  { n: "다오", c: "#45a9f5", bg: "#d8efff", ear: "round", inner: "#a8dfff", nose: "#eaf8ff", belly: "#dff4ff" },
-  { n: "배찌", c: "#ed424b", bg: "#ffe0e2", ear: "round", inner: "#ff9da2", muzzle: "#ffd0d0", nose: "#8f2635", belly: "#ffb5ba" },
-  { n: "우니", c: "#f3a52e", bg: "#fff0c9", ear: "round", inner: "#fff0d2", muzzle: "#fff4dc", nose: "#e8a72a", belly: "#fff0d2" },
-  { n: "디지니", c: "#e94eae", bg: "#ffe0f3", ear: "round", inner: "#ff9bd8", nose: "#e34b9d", belly: "#ffd1ed" },
-  { n: "모스", c: "#e9b84e", bg: "#fff1c8", ear: "round", inner: "#ffe4a0", nose: INKC, belly: "#fff0c8" },
-  { n: "에띠", c: "#69bd63", bg: "#e0f6dd", ear: "round", inner: "#a8e5a2", nose: INKC, belly: "#e7f8e3" },
-  { n: "케피", c: "#299b62", bg: "#d7f3e3", ear: "round", inner: "#7dd6a5", nose: "#e9fff1", belly: "#bcebd0" },
-  { n: "마리드", c: "#ed75b5", bg: "#ffe4f2", ear: "round", inner: "#ffaed5", nose: INKC, belly: "#ffd4e9" },
-  { n: "수", c: "#b9dff5", bg: "#e8f6ff", ear: "long", inner: "#ffffff", nose: "#8bc5e8", belly: "#f5fbff" },
-  { n: "후우", c: "#8e78d8", bg: "#eee8ff", ear: "round", inner: "#c8baff", nose: INKC, belly: "#dcd3ff" },
-  { n: "레이", c: "#dce7f2", bg: "#f0f5fb", ear: "none", faceP: "#ffffff", belly: "#ffffff", nose: "#9baec5" },
-  { n: "로두마니", c: "#5b4b45", bg: "#e8ddd7", ear: "none", faceP: "#d8c2b4", belly: "#8c6d5d", nose: INKC, arm: "#4b3b36" },
+  { n: "토끼", c: "#fff7fa", bg: "#ffe3ee", ear: "long", inner: "#ffb3cb", nose: "#ff8fb1" },
+  { n: "고양이", c: "#ffbf78", bg: "#ffe2bf", ear: "tri", inner: "#ff9bb3", nose: "#ff8fb1", whisk: 1, stripe: "#d9822b" },
+  { n: "곰", c: "#c98f5d", bg: "#ecd2b6", ear: "round", inner: "#f1d2ae", muzzle: "#f1d2ae", nose: INKC },
+  { n: "펭귄", c: "#51608a", bg: "#cfd8f2", ear: "none", faceP: "#ffffff", belly: "#ffffff", beak: 1, foot: "#ff9f1c" },
+  { n: "병아리", c: "#ffe066", bg: "#fff4b8", ear: "none", beak: 1, tuft: 1, foot: "#ff9f1c" },
+  { n: "여우", c: "#ff8a3d", bg: "#ffd2b0", ear: "tri", inner: "#ffe3cc", muzzle: "#ffffff", nose: INKC, belly: "#fff0e0" },
+  { n: "개구리", c: "#7ed957", bg: "#d3f5c2", ear: "bump", wide: 1, belly: "#d9f5c6" },
+  { n: "판다", c: "#ffffff", bg: "#e7e7ee", ear: "round", earC: INKC, inner: INKC, patch: 1, nose: INKC, arm: INKC, foot: INKC },
+  { n: "강아지", c: "#f6dfb8", bg: "#fbe9cc", ear: "floppy", earC: "#a8713f", spot: 1, nose: INKC, muzzle: "#fff4e0" },
+  { n: "햄스터", c: "#ffd9a8", bg: "#ffeacc", ear: "round", inner: "#ffb3b3", muzzle: "#fff4e6", nose: "#ff8fb1", bigcheek: 1, belly: "#fff4e6" },
+  { n: "돼지", c: "#ffb4c8", bg: "#ffdbe6", ear: "pigtri", earC: "#ff9db8", snout: "#ff8fa9" },
+  { n: "공룡", c: "#8fd6a0", bg: "#d4f2dc", ear: "spikes", muzzle: "#d9f5c6", belly: "#d9f5c6", nose: INKC },
 ];
 function E(c, x, y, rx, ry, fill, stroke, rot, lw) { c.beginPath(); c.ellipse(x, y, Math.max(0.1, rx), Math.max(0.1, ry), rot || 0, 0, 7); if (fill) { c.fillStyle = fill; c.fill(); } if (stroke) { c.strokeStyle = stroke; c.lineWidth = lw || 2.2; c.stroke(); } }
 function Pg(c, pts, fill, stroke, lw) { c.beginPath(); c.moveTo(pts[0], pts[1]); for (let i = 2; i < pts.length; i += 2) c.lineTo(pts[i], pts[i + 1]); c.closePath(); if (fill) { c.fillStyle = fill; c.fill(); } if (stroke) { c.strokeStyle = stroke; c.lineWidth = lw || 2.2; c.stroke(); } }
